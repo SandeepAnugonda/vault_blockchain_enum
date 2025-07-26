@@ -1,6 +1,6 @@
-# Blockxhain
+# Blockchain_doc
 
-Blockchain is a FastAPI-based backend for secure document management using blockchain technology. It integrates with an Ethereum smart contract (deployed on Sepolia testnet) to record document actions (create, update, share, access) immutably, and uses IPFS (via Pinata) for decentralized file storage.
+Blockchain_doc is a FastAPI-based backend for secure document management using blockchain technology. It integrates with an Ethereum smart contract (deployed on Sepolia testnet) to record document actions (create, update, share, access) immutably, and uses IPFS (via Pinata) for decentralized file storage.
 
 ## Features
 - Create, update, and share documents with blockchain-backed audit trails
