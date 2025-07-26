@@ -1,0 +1,24 @@
+# FastAPI
+fastapi
+uvicorn
+
+# Database
+sqlalchemy
+databases
+asyncpg
+
+# Authentication
+python-jose
+passlib
+
+# Cryptography
+cryptography
+
+# Others
+pydantic
+
+# Blockchain and IPFS
+web3
+requests
+requests-toolbelt
+python-dotenv

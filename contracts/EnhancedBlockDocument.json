@@ -1,0 +1,515 @@
+[
+	{
+		"inputs": [],
+		"stateMutability": "nonpayable",
+		"type": "constructor"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": false,
+				"internalType": "string",
+				"name": "DocTitle",
+				"type": "string"
+			},
+			{
+				"indexed": false,
+				"internalType": "string",
+				"name": "Owner",
+				"type": "string"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint8",
+				"name": "action",
+				"type": "uint8"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "LastAccessDate",
+				"type": "uint256"
+			}
+		],
+		"name": "DocumentAccessed",
+		"type": "event"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": false,
+				"internalType": "string",
+				"name": "DocTitle",
+				"type": "string"
+			},
+			{
+				"indexed": false,
+				"internalType": "string",
+				"name": "Owner",
+				"type": "string"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "LastAccessDate",
+				"type": "uint256"
+			}
+		],
+		"name": "DocumentCreated",
+		"type": "event"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": false,
+				"internalType": "string",
+				"name": "DocTitle",
+				"type": "string"
+			},
+			{
+				"indexed": false,
+				"internalType": "string",
+				"name": "Owner",
+				"type": "string"
+			},
+			{
+				"indexed": false,
+				"internalType": "string",
+				"name": "SharedUser",
+				"type": "string"
+			},
+			{
+				"indexed": false,
+				"internalType": "string",
+				"name": "SharedEndDate",
+				"type": "string"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "LastAccessDate",
+				"type": "uint256"
+			}
+		],
+		"name": "DocumentShared",
+		"type": "event"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": false,
+				"internalType": "string",
+				"name": "DocTitle",
+				"type": "string"
+			},
+			{
+				"indexed": false,
+				"internalType": "string",
+				"name": "Owner",
+				"type": "string"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "LastAccessDate",
+				"type": "uint256"
+			}
+		],
+		"name": "DocumentUpdated",
+		"type": "event"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "_DocTitle",
+				"type": "string"
+			},
+			{
+				"internalType": "string",
+				"name": "_Owner",
+				"type": "string"
+			},
+			{
+				"internalType": "uint8",
+				"name": "_action",
+				"type": "uint8"
+			}
+		],
+		"name": "accessDocument",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "_DocTitle",
+				"type": "string"
+			},
+			{
+				"internalType": "string",
+				"name": "_Owner",
+				"type": "string"
+			}
+		],
+		"name": "createDocument",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "",
+				"type": "string"
+			},
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"name": "documentHistory",
+		"outputs": [
+			{
+				"internalType": "enum EnhancedBlockDocument.Action",
+				"name": "action",
+				"type": "uint8"
+			},
+			{
+				"internalType": "uint256",
+				"name": "timestamp",
+				"type": "uint256"
+			},
+			{
+				"internalType": "string",
+				"name": "LastAccessedBy",
+				"type": "string"
+			},
+			{
+				"internalType": "string",
+				"name": "SharedUser",
+				"type": "string"
+			},
+			{
+				"internalType": "string",
+				"name": "SharedEndDate",
+				"type": "string"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "",
+				"type": "string"
+			}
+		],
+		"name": "documents",
+		"outputs": [
+			{
+				"internalType": "string",
+				"name": "DocTitle",
+				"type": "string"
+			},
+			{
+				"internalType": "string",
+				"name": "Owner",
+				"type": "string"
+			},
+			{
+				"internalType": "uint256",
+				"name": "LastAccessDate",
+				"type": "uint256"
+			},
+			{
+				"internalType": "string",
+				"name": "LastAccessedBy",
+				"type": "string"
+			},
+			{
+				"internalType": "enum EnhancedBlockDocument.Action",
+				"name": "action",
+				"type": "uint8"
+			},
+			{
+				"internalType": "string",
+				"name": "SharedUser",
+				"type": "string"
+			},
+			{
+				"internalType": "string",
+				"name": "SharedEndDate",
+				"type": "string"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "_DocTitle",
+				"type": "string"
+			}
+		],
+		"name": "getDocument",
+		"outputs": [
+			{
+				"components": [
+					{
+						"internalType": "string",
+						"name": "DocTitle",
+						"type": "string"
+					},
+					{
+						"internalType": "string",
+						"name": "Owner",
+						"type": "string"
+					},
+					{
+						"internalType": "uint256",
+						"name": "LastAccessDate",
+						"type": "uint256"
+					},
+					{
+						"internalType": "string",
+						"name": "LastAccessedBy",
+						"type": "string"
+					},
+					{
+						"internalType": "enum EnhancedBlockDocument.Action",
+						"name": "action",
+						"type": "uint8"
+					},
+					{
+						"internalType": "string",
+						"name": "SharedUser",
+						"type": "string"
+					},
+					{
+						"internalType": "string",
+						"name": "SharedEndDate",
+						"type": "string"
+					}
+				],
+				"internalType": "struct EnhancedBlockDocument.Document",
+				"name": "",
+				"type": "tuple"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "_DocTitle",
+				"type": "string"
+			},
+			{
+				"internalType": "string",
+				"name": "_Owner",
+				"type": "string"
+			}
+		],
+		"name": "getDocumentHistory",
+		"outputs": [
+			{
+				"components": [
+					{
+						"internalType": "enum EnhancedBlockDocument.Action",
+						"name": "action",
+						"type": "uint8"
+					},
+					{
+						"internalType": "uint256",
+						"name": "timestamp",
+						"type": "uint256"
+					},
+					{
+						"internalType": "string",
+						"name": "LastAccessedBy",
+						"type": "string"
+					},
+					{
+						"internalType": "string",
+						"name": "SharedUser",
+						"type": "string"
+					},
+					{
+						"internalType": "string",
+						"name": "SharedEndDate",
+						"type": "string"
+					}
+				],
+				"internalType": "struct EnhancedBlockDocument.ActionRecord[]",
+				"name": "",
+				"type": "tuple[]"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "_Owner",
+				"type": "string"
+			}
+		],
+		"name": "getUserDocuments",
+		"outputs": [
+			{
+				"components": [
+					{
+						"internalType": "string",
+						"name": "DocTitle",
+						"type": "string"
+					},
+					{
+						"internalType": "string",
+						"name": "Owner",
+						"type": "string"
+					},
+					{
+						"internalType": "uint256",
+						"name": "LastAccessDate",
+						"type": "uint256"
+					},
+					{
+						"internalType": "string",
+						"name": "LastAccessedBy",
+						"type": "string"
+					},
+					{
+						"internalType": "enum EnhancedBlockDocument.Action",
+						"name": "action",
+						"type": "uint8"
+					},
+					{
+						"internalType": "string",
+						"name": "SharedUser",
+						"type": "string"
+					},
+					{
+						"internalType": "string",
+						"name": "SharedEndDate",
+						"type": "string"
+					}
+				],
+				"internalType": "struct EnhancedBlockDocument.Document[]",
+				"name": "",
+				"type": "tuple[]"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "owner",
+		"outputs": [
+			{
+				"internalType": "address",
+				"name": "",
+				"type": "address"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "_DocTitle",
+				"type": "string"
+			},
+			{
+				"internalType": "string",
+				"name": "_Owner",
+				"type": "string"
+			},
+			{
+				"internalType": "string",
+				"name": "_SharedUser",
+				"type": "string"
+			},
+			{
+				"internalType": "enum EnhancedBlockDocument.Permission",
+				"name": "_permission",
+				"type": "uint8"
+			},
+			{
+				"internalType": "string",
+				"name": "_SharedEndDate",
+				"type": "string"
+			}
+		],
+		"name": "shareDocument",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "_Owner",
+				"type": "string"
+			},
+			{
+				"internalType": "string",
+				"name": "_oldDocTitle",
+				"type": "string"
+			},
+			{
+				"internalType": "string",
+				"name": "_newDocTitle",
+				"type": "string"
+			}
+		],
+		"name": "updateDocument",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "",
+				"type": "string"
+			},
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"name": "userDocuments",
+		"outputs": [
+			{
+				"internalType": "string",
+				"name": "",
+				"type": "string"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	}
+]
