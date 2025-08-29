@@ -1,480 +1,311 @@
-from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, EmailStr, validator
-from typing import Optional
-from datetime import datetime
-import hashlib
-import json
-import uuid
-from app.utils.blockchain import upload_to_pinata, is_owner, has_shared_access, create_document_on_chain
-
-# In-memory storage
-in_memory_documents = {}  # {owner: {doc_id: [blocks]}}
-shared_documents = {}
+import os
+from fastapi import APIRouter, HTTPException, File, UploadFile, Form
+from fastapi.responses import FileResponse
+from app.schemas import DocumentBlockRequest, ShareDocumentRequest, AccessActionRequest, DocumentResponse
 from app.models.models import APIResponse
-# from app.utils.utils import verify_blockchain_integrity, format_file_size
+from app.utils.blockchain import upload_to_pinata, w3, contract, create_document_on_chain, access_document_on_chain, share_document_on_chain, get_document_on_chain, get_user_documents_on_chain, get_document_history_on_chain
+from app.utils.utils import get_file_info, create_block_metadata
+from typing import List, Optional
+from eth_utils import keccak
+from web3.exceptions import ContractLogicError
 
-# Define ShareDocumentRequest model
-class ShareDocumentRequest(BaseModel):
-    doc_id: str  # replaces doc_title, filename, file_path
-    owner: str   # replaces owner_id, user_id, ownername, username
-    recipient_email: EmailStr
-    permissions: str  # view/download/both (given by owner)
-    shared_end_time: Optional[str] = None  # access end time/date given by owner
+ACTION_ENUM = [
+    "Created", "Shared", "Viewed", "Downloaded", "Shared_view", "Shared_download"
+]
 
-    @validator("permissions")
-    def validate_permissions(cls, v):
-        allowed = {"view", "download", "both"}
-        if v.lower() not in allowed:
-            raise ValueError(f"permissions must be one of {allowed}")
-        return v.lower()
+PERMISSION_ENUM = ["View", "Download"]
+
+def compute_block_hash(block):
+    # Solidity's abi.encode order for ActionRecord (no ipfsHash)
+    concat = (
+        str(block["DocTitle"]) +
+        str(block["Owner"]) +
+        str(block["LastAccessDate"]) +
+        str(block["LastAccessedBy"]) +
+        str(block["action"]) +
+        str(block["SharedUser"]) +
+        str(block["SharedEndDate"]) +
+        str(block.get("timestamp") or block.get("TimeStamp")) +
+        str(block["previousHash"])
+    )
+    return "0x" + keccak(text=concat).hex()
+
+def _to_str(value):
+    return "" if value is None else str(value)
+
+def _to_int(value):
+    try:
+        if value is None or value == "":
+            return 0
+        return int(value)
+    except Exception:
+        return 0
+
+def _action_to_str(action_value):
+    try:
+        if isinstance(action_value, int):
+            return ACTION_ENUM[action_value] if 0 <= action_value < len(ACTION_ENUM) else str(action_value)
+        return str(action_value)
+    except Exception:
+        return ""
+
+def _standardize_block(raw: dict) -> dict:
+    # Normalize fields; keep numeric types as ints for Swagger correctness
+    action = raw.get("action")
+    owner = raw.get("Owner")
+    shared_user = raw.get("SharedUser")
+    last_accessed_by = raw.get("LastAccessedBy")
+    # For Created, LastAccessedBy is owner
+    if (isinstance(action, int) and action == 0) or (action == "Created"):
+        last_accessed_by = owner
+    # For Shared actions, LastAccessedBy is shared_user
+    elif (isinstance(action, int) and action in [1, 4, 5]) or (action in ["Shared", "Shared_view", "Shared_download"]):
+        last_accessed_by = shared_user
+    # For Viewed/Downloaded, use contract value (do not override)
+    # If contract value is empty, fallback to owner
+    if (isinstance(action, int) and action in [2, 3]) or (action in ["Viewed", "Downloaded"]):
+        if not last_accessed_by:
+            last_accessed_by = owner
+    prev_hash = raw.get("previousHash")
+    if isinstance(prev_hash, bytes):
+        prev_hash = prev_hash.hex()
+    sanitized = {
+        "DocTitle": _to_str(raw.get("DocTitle")),
+        "Owner": _to_str(owner),
+        "LastAccessDate": _to_int(raw.get("LastAccessDate")),
+        "LastAccessedBy": _to_str(last_accessed_by),
+        "action": _action_to_str(action),
+        "SharedUser": _to_str(shared_user),
+        "SharedEndDate": _to_int(raw.get("SharedEndDate")),
+        "TimeStamp": _to_int(raw.get("TimeStamp")),
+        "previousHash": _to_str(prev_hash),
+    }
+    compute_input = dict(sanitized)
+    compute_input["timestamp"] = _to_str(raw.get("timestamp"))
+    sanitized["blockHash"] = _to_str(compute_block_hash(compute_input))
+    return sanitized
 
 router = APIRouter()
 
-# Pydantic models for request/response
-class Owner(BaseModel):
-    owner: str
-
-class DocumentBlockRequest(BaseModel):
-    doc_id: str
-    owner: str
-
-class UpdateDocumentBlockRequest(BaseModel):
-    doc_id: str
-    owner: str
-    new_doc_id: str
 
 
-class AccessActionRequest(BaseModel):
-    doc_id: str
-    owner: str
-    accessed_by: str
-    action_type: int  # 0 for view, 1 for download
+from app.schemas import DocumentBlockRequest
 
-def get_current_user():
-    # Replace with real authentication logic 
-    return "test_user"
-
-def generate_block_hash(block_data: dict) -> str:
-    """Generate SHA-256 hash for block data"""
-    block_string = json.dumps(block_data, sort_keys=True)
-    return hashlib.sha256(block_string.encode()).hexdigest()
-
-def get_previous_block_hash(document_id: str) -> str:
-    """Get the hash of the previous block in the chain (DB REMOVED)"""
-    # Placeholder: return dummy previous hash
-    return "0"
-
-def get_next_block_number(document_id: str) -> int:
-    """Get the next block number for the document chain (DB REMOVED)"""
-    # Placeholder: always return 1
-    return 1
-
-def create_blockchain_block(
-    document_id: str,
-    user_id: str,
-    action: str,
-    file_size: int = None,
-    encrypted_content: str = None,
-    metadata: dict = None,
-    last_accessed_by: str = None
-):
-    """Create a new blockchain block and store in memory"""
-    # Find previous block for block_number and previous_hash
-    owner_docs = in_memory_documents.get(user_id, {})
-    blocks = owner_docs.get(document_id, [])
-    block_number = len(blocks) + 1
-    previous_hash = blocks[-1]["block_hash"] if blocks else "0"
-    block_data = {
-        "document_id": document_id,
-        "user_id": user_id,
-        "block_number": block_number,
-        "previous_hash": previous_hash,
-        "action": action,
-        "file_size": file_size,
-        "timestamp": datetime.utcnow().isoformat(),
-        "metadata": metadata
-    }
-    block_hash = generate_block_hash(block_data)
-    block = {
-        "id": str(uuid.uuid4()),
-        "document_id": document_id,
-        "user_id": user_id,
-        "block_number": block_number,
-        "block_hash": block_hash,
-        "previous_hash": previous_hash,
-        "action": action,
-        "file_size": file_size,
-        "encrypted_content": encrypted_content,
-        "metadata": json.dumps(metadata) if metadata else None,
-        "timestamp": datetime.utcnow().isoformat(),
-        "status": action.lower(),
-        "last_accessed_by": last_accessed_by or user_id
-    }
-    # Store in memory
-    if user_id not in in_memory_documents:
-        in_memory_documents[user_id] = {}
-    if document_id not in in_memory_documents[user_id]:
-        in_memory_documents[user_id][document_id] = []
-    in_memory_documents[user_id][document_id].append(block)
-    return block
-
-# 1. POST: Create a block for documents
-@router.post("/create-block", response_model=APIResponse)
-async def create_document_block(
-    request: DocumentBlockRequest
-):
-    """Create a new blockchain block for a document"""
+@router.post("/create_block", response_model=APIResponse)
+async def create_document_block(request: DocumentBlockRequest):
+    import asyncio
+    # Pre-check if document already exists (handles cross-owner duplication as contract uses title key)
     try:
-        # Check if this is the first block for this document
-        # DB REMOVED: Always allow creation
-        # Create genesis block
-        metadata = {
-            "creation_timestamp": datetime.utcnow().isoformat(),
-            "owner": request.owner,
-            "is_genesis": True
-        }
-        new_block = create_blockchain_block(
-            document_id=request.doc_id,
-            user_id=request.owner,
-            action="CREATED",
-            file_size=0,
-            encrypted_content=None,
-            metadata=metadata,
-            last_accessed_by=request.owner
-        )
-        # Save metadata to blockchain
-        receipt = create_document_on_chain(request.doc_id, request.owner)
-        return APIResponse(
-            success=True,
-            message="Document block created and saved to blockchain",
-            data={
-                "block_id": new_block["id"],
-                "document_id": new_block["document_id"],
-                "block_number": new_block["block_number"],
-                "block_hash": new_block["block_hash"],
-                "status": new_block["status"],
-                "last_accessed_by": new_block["last_accessed_by"],
-                "timestamp": new_block["timestamp"],
-                "blockchain_tx_hash": receipt.transactionHash.hex()
-            }
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create document block: {str(e)}"
-        )
-
-# 2. PUT: Update document and create new block
-@router.put("/update-document", response_model=APIResponse)
-async def update_document_block(request: UpdateDocumentBlockRequest):
-    """Update document and create a new block in the blockchain"""
-    try:
-        metadata = {
-            "update_timestamp": datetime.utcnow().isoformat(),
-            "previous_doc_id": request.doc_id,
-            "updated_by": request.owner,
-            "version_update": True
-        }
-        # Always create a new block for the update action
-        new_block = create_blockchain_block(
-            document_id=request.new_doc_id,
-            user_id=request.owner,
-            action="UPDATED",
-            file_size=0,
-            encrypted_content=None,
-            metadata=metadata,
-            last_accessed_by=request.owner
-        )
-        return APIResponse(
-            success=True,
-            message="Document updated and new block created successfully",
-            data={
-                "new_block_id": new_block["id"],
-                "new_document_id": new_block["document_id"],
-                "block_number": new_block["block_number"],
-                "block_hash": new_block["block_hash"],
-                "previous_doc_id": request.doc_id,
-                "status": new_block["status"],
-                "last_accessed_by": new_block["last_accessed_by"],
-                "timestamp": new_block["timestamp"]
-            }
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update document: {str(e)}"
-        )
-
-
-# 3. POST: Access document (view or download) and create action block
-@router.post("/access-document", response_model=APIResponse)
-async def access_document(request: AccessActionRequest):
-    """Access document (view or download) and create action block (0=view, 1=download). Owner always has full access."""
-    try:
-        # Verify document exists
-        if request.doc_id not in in_memory_documents.get(request.owner, {}):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Document not found"
-            )
-        if request.action_type not in [0, 1]:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid action: must be 0 (View) or 1 (Download)"
-            )
-        action = "VIEWED" if request.action_type == 0 else "DOWNLOADED"
-        # If accessed_by is the owner, always allow
-        if request.accessed_by == request.owner:
-            allowed = True
-        else:
-            # Check if recipient has permission for the requested action
-            key = (request.owner, request.doc_id)
-            allowed = False
-            if key in shared_documents:
-                recipient_access = shared_documents[key].get(request.accessed_by)
-                if recipient_access == "both":
-                    allowed = True
-                elif recipient_access == "view" and request.action_type == 0:
-                    allowed = True
-                elif recipient_access == "download" and request.action_type == 1:
-                    allowed = True
-                else:
-                    # Recipient exists but does not have permission for this action
-                    allowed = False
+        exists = False
+        try:
+            # Use wrapper that encodes bytes32
+            get_document_on_chain(request.DocTitle, request.Owner)
+            exists = True  # found for same owner
+        except Exception as e:
+            msg = str(e)
+            # Treat contract revert/no data as 'not found', not 500
+            if "Document does not exist" in msg or "execution reverted" in msg or "no data" in msg:
+                exists = False
+            elif "Owner does not match" in msg:
+                raise HTTPException(status_code=400, detail="DocTitle is already used by another owner. Choose a different title.")
             else:
-                # Not shared with this recipient
-                allowed = False
-        if not allowed:
-            action_str = "view" if request.action_type == 0 else "download"
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"You do not have permission to {action_str} this document. Ask the owner to share with '{action_str}' access."
-            )
-        metadata = {
-            "access_timestamp": datetime.utcnow().isoformat(),
-            "action_type": action,
-            "doc_id": request.doc_id,
-            "accessed_by": request.accessed_by
-        }
-        action_block = create_blockchain_block(
-            document_id=request.doc_id,
-            user_id=request.owner,
-            action=action,
-            file_size=0,
-            encrypted_content=None,
-            metadata=metadata,
-            last_accessed_by=request.accessed_by
-        )
-        return APIResponse(
-            success=True,
-            message=f"Document {action.lower()} successfully",
-            data={
-                "block_id": action_block["id"],
-                "document_id": action_block["document_id"],
-                "block_number": action_block["block_number"],
-                "action": action_block["action"],
-                "status": action_block["status"],
-                "last_accessed_by": action_block["last_accessed_by"],
-                "timestamp": action_block["timestamp"],
-                "doc_id": request.doc_id,
-                "action_type": request.action_type
-            }
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to access document: {str(e)}"
-        )
-
-def document_exists(owner: str, doc_id: str) -> bool:
-    """Check if a document exists for a given owner and doc_id."""
-    return doc_id in in_memory_documents.get(owner, {})
-
-# 4. POST: Share document
-@router.post("/share-document", response_model=APIResponse)
-async def share_document(request: ShareDocumentRequest):
-    """Share document and create sharing block, tracking allowed access for recipient"""
-    try:
-        if not document_exists(request.owner, request.doc_id):
-            raise HTTPException(status_code=404, detail="Document not found to share")
-        key = (request.owner, request.doc_id)
-        if key not in shared_documents:
-            shared_documents[key] = {}
-        shared_documents[key][str(request.recipient_email)] = {
-            "permissions": request.permissions,
-            "shared_end_time": request.shared_end_time
-        }
-        # Always ensure owner has full access
-        shared_documents[key][str(request.owner)] = {
-            "permissions": "both",
-            "shared_end_time": None
-        }
-        action = f'SHARED_DOCUMENT_TO_{request.recipient_email}'
-        metadata = {
-            "share_timestamp": datetime.utcnow().isoformat(),
-            "action_type": action,
-            "doc_id": request.doc_id,
-            "recipient_email": request.recipient_email,
-            "permissions": request.permissions,
-            "shared_end_time": request.shared_end_time,
-            "share_id": str(uuid.uuid4())
-        }
-        # Always create a new block for the share action
-        share_block = create_blockchain_block(
-            document_id=request.doc_id,
-            user_id=request.owner,
-            action=action,
-            file_size=0,
-            encrypted_content=None,
-            metadata=metadata,
-            last_accessed_by=request.owner
-        )
-        return APIResponse(
-            success=True,
-            message=f"Document shared successfully with {request.recipient_email} ({request.permissions})",
-            data={
-                "block_id": share_block["id"],
-                "document_id": share_block["document_id"],
-                "block_number": share_block["block_number"],
-                "recipient_email": request.recipient_email,
-                "access_type": request.access_type,
-                "action": share_block["action"],
-                "status": request.owner,
-                "last_accessed_by": request.owner,
-                "timestamp": share_block["timestamp"],
-                "share_id": metadata["share_id"],
-                "doc_id": request.doc_id
-            }
-        )
+                raise
+        if exists:
+            raise HTTPException(status_code=400, detail="Document with this title already exists for this owner.")
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to share document: {str(e)}"
-        )
-# 8. POST: Generic action block for any action (view, download, shared, updated, etc.)
-@router.post("/action-block", response_model=APIResponse)
-async def create_generic_action_block(
-    doc_id: str,
-    owner: str,
-    action: str,
-    metadata: Optional[dict] = None
-):
-    """Create a new block for any action (view, download, shared, updated, etc.)"""
+        msg = str(e)
+        # Treat contract revert/no data as 'not found', not 500
+        if "execution reverted" in msg or "no data" in msg:
+            pass  # Document does not exist, so allow creation
+        else:
+            raise HTTPException(status_code=500, detail=f"Error checking document existence: {e}")
+
     try:
-        block = create_blockchain_block(
-            document_id=doc_id,
-            user_id=owner,
-            action=action,
-            file_size=0,
-            encrypted_content=None,
-            metadata=metadata,
-            last_accessed_by=owner
-        )
-        return APIResponse(
-            success=True,
-            message=f"Action block created for action: {action}",
-            data={
-                "block_id": block["id"],
-                "document_id": block["document_id"],
-                "block_number": block["block_number"],
-                "action": block["action"],
-                "status": block["status"],
-                "last_accessed_by": block["last_accessed_by"],
-                "timestamp": block["timestamp"],
-                "doc_id": doc_id
-            }
-        )
+        # Create document block on blockchain; generate internal placeholder ipfsHash (API does not supply)
+        placeholder_ipfs = keccak(text=f"{request.DocTitle}|{request.Owner}|{request.LastAccessDate}").hex()[2:34]
+        receipt = create_document_on_chain(request.DocTitle, int(request.Owner), request.LastAccessDate, placeholder_ipfs)
+        if receipt.get("status", 1) == 0:
+            raise HTTPException(status_code=400, detail="Blockchain transaction reverted. Title may already exist.")
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create action block: {str(e)}"
-        )
-    # Use request.permissions instead of request.access_type
-    # Example usage:
-    # permission = request.permissions
-    # ...existing code...
-# 5. GET: Get all documents for owner
-@router.get("/owner/{owner}/documents", response_model=APIResponse)
-async def get_owner_documents(owner: str):
-    """Get all documents and their history for a specific owner"""
-    owner_docs = in_memory_documents.get(owner, {})
-    documents = []
-    total_blocks = 0
-    for doc_id, blocks in owner_docs.items():
-        documents.append({
-            "doc_id": doc_id,
-            "blocks": blocks
-        })
-        total_blocks += len(blocks)
-    return APIResponse(
-        success=True,
-        message=f"Retrieved documents for owner {owner}",
-        data={
-            "owner": owner,
-            "documents": documents,
-            "total_documents": len(documents),
-            "total_blocks": total_blocks
-        }
-    )
+        msg = str(e)
+        # If contract revert is for duplicate, return 400
+        if "Document already exists" in msg or "Owner does not match" in msg or "reverted" in msg:
+            raise HTTPException(status_code=400, detail=f"Document already exists for this owner or title is not unique: {msg}")
+        raise HTTPException(status_code=500, detail=f"Blockchain error: {msg}")
 
-# 6. GET: Get individual document details
-@router.get("/owner/{owner}/document/{doc_id}", response_model=APIResponse)
-async def get_individual_document(owner: str, doc_id: str):
-    """Get details of an individual document from owner's document list"""
-    owner_docs = in_memory_documents.get(owner, {})
-    blocks = owner_docs.get(doc_id)
-    if not blocks:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    latest_block = blocks[-1] if blocks else None
-    return APIResponse(
-        success=True,
-        message=f"Retrieved latest block for document {doc_id} (owner {owner})",
-        data={
-            "owner": owner,
-            "doc_id": doc_id,
-            "latest_block": latest_block,
-            "block_number": latest_block["block_number"] if latest_block else None,
-            "block_hash": latest_block["block_hash"] if latest_block else None,
-            "status": latest_block["status"] if latest_block else None,
-            "last_accessed_by": latest_block["last_accessed_by"] if latest_block else None,
-            "timestamp": latest_block["timestamp"] if latest_block else None
-        }
-    )
-
-# 7. GET: Get complete document history with all blocks
-@router.get("/document/{doc_id}/complete-history", response_model=APIResponse)
-async def get_complete_document_history(doc_id: str, owner: Optional[str] = None):
-    """Get complete blockchain history of a document with all blocks"""
-    # If owner is not provided, search all owners
-    if owner:
-        owner_docs = in_memory_documents.get(owner, {})
-        blocks = owner_docs.get(doc_id)
-        if not blocks:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-        return APIResponse(
-            success=True,
-            message=f"Retrieved complete history for document {doc_id}",
-            data={
-                "owner": owner,
-                "doc_id": doc_id,
-                "blocks": blocks,
-                "total_blocks": len(blocks)
-            }
-        )
-    # Search all owners for doc_id
-    for owner_key, owner_docs in in_memory_documents.items():
-        blocks = owner_docs.get(doc_id)
-        if blocks:
+    # Retry fetching document/history for up to 5 seconds
+    import asyncio
+    for _ in range(10):
+        try:
+            latest_doc = get_document_on_chain(request.DocTitle, request.Owner)
+            history = get_document_history_on_chain(request.DocTitle, request.Owner)
+            action_str = ACTION_ENUM[latest_doc["action"]] if isinstance(latest_doc["action"], int) and latest_doc["action"] < len(ACTION_ENUM) else str(latest_doc["action"])
+            latest_block = dict(latest_doc)
+            latest_block["action"] = action_str
+            latest_block["timestamp"] = history[0]["timestamp"] if history else None
+            latest_block["previousHash"] = history[0].get("previousHash") if history else None
             return APIResponse(
                 success=True,
-                message=f"Retrieved complete history for document {doc_id}",
-                data={
-                    "owner": owner_key,
-                    "doc_id": doc_id,
-                    "blocks": blocks,
-                    "total_blocks": len(blocks)
-                }
+                message="Document block created on blockchain",
+                data=_standardize_block(latest_block),
             )
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        except Exception as e:
+            await asyncio.sleep(0.5)
+    raise HTTPException(status_code=202, detail="Document creation transaction sent; data will be readable shortly. Try again in a few seconds.")
+
+
+@router.post("/access_document", response_model=APIResponse)
+async def access_document(request: AccessActionRequest):
+    try:
+        receipt = access_document_on_chain(request.DocTitle, int(request.Owner), request.action, request.LastAccessDate)
+        d = get_document_on_chain(request.DocTitle, int(request.Owner))
+        action_str = ACTION_ENUM[d["action"]] if isinstance(d["action"], int) and d["action"] < len(ACTION_ENUM) else str(d["action"])
+        block = dict(d)
+        block["action"] = action_str
+        block["blockHash"] = compute_block_hash(block)
+        return APIResponse(
+            success=True,
+            message="Document accessed",
+            data=_standardize_block(block),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/share_document", response_model=APIResponse)
+async def share_document(request: ShareDocumentRequest):
+    try:
+        receipt = share_document_on_chain(
+            request.DocTitle,
+            int(request.Owner),
+            request.SharedUser,
+            request.permissions,
+            request.SharedEndDate,
+            request.LastAccessDate
+        )
+        d = get_document_on_chain(request.DocTitle, int(request.Owner))
+        action_str = ACTION_ENUM[d["action"]] if isinstance(d["action"], int) and d["action"] < len(ACTION_ENUM) else str(d["action"])
+        block = dict(d)
+        block["action"] = action_str
+        block["blockHash"] = compute_block_hash(block)
+        return APIResponse(
+            success=True,
+            message="Document shared",
+            data=_standardize_block(block),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# New GET endpoint: Get all blocks for an owner
+@router.get("/blocks/owner/{owner}", response_model=APIResponse)
+async def get_blocks_by_owner(owner: str):
+    try:
+        docs = get_user_documents_on_chain(int(owner))
+        blocks = []
+        for d in docs:
+            action_str = ACTION_ENUM[d["action"]] if isinstance(d["action"], int) and d["action"] < len(ACTION_ENUM) else str(d["action"])
+            block = dict(d)
+            block["action"] = action_str
+            # Ensure previousHash is always present, set to None or empty string if missing
+            if "previousHash" not in block or block["previousHash"] is None:
+                block["previousHash"] = ""
+            block["blockHash"] = compute_block_hash(block)
+            blocks.append(_standardize_block(block))
+        if blocks:
+            return APIResponse(success=True, message="Blocks for this owner fetched from blockchain.", data={"blocks": blocks})
+        else:
+            raise HTTPException(status_code=404, detail="No blocks found for this owner.")
+    except Exception as e:
+        msg = str(e)
+        # If error is only about previousHash, ignore and return blocks
+        if "previousHash" in msg:
+            # Try to fetch blocks again, ignoring previousHash
+            try:
+                docs = get_user_documents_on_chain(int(owner))
+                blocks = []
+                for d in docs:
+                    action_str = ACTION_ENUM[d["action"]] if isinstance(d["action"], int) and d["action"] < len(ACTION_ENUM) else str(d["action"])
+                    block = dict(d)
+                    block["action"] = action_str
+                    block["previousHash"] = ""
+                    block["blockHash"] = compute_block_hash(block)
+                    blocks.append(_standardize_block(block))
+                if blocks:
+                    return APIResponse(success=True, message="Blocks for this owner fetched from blockchain.", data={"blocks": blocks})
+            except Exception:
+                pass
+        if "invalid" in msg or "not found" in msg or "does not exist" in msg:
+            raise HTTPException(status_code=404, detail=f"Owner not found or invalid: {msg}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch blocks for owner: {msg}")
+
+# New GET endpoint: Get all blocks (history) for a document
+@router.get("/blocks/document/{doctitle}/owner/{owner}", response_model=APIResponse)
+async def get_document_blocks_history(doctitle: str, owner: str):
+    try:
+        # Pre-check existence to avoid revert and provide clearer error
+        try:
+            history = get_document_history_on_chain(doctitle, int(owner))
+        except Exception as e:
+            msg = str(e)
+            if "Document does not exist" in msg or "execution reverted" in msg or "no data" in msg:
+                raise HTTPException(status_code=404, detail="Document not found for this owner")
+            else:
+                raise
+        try:
+            user_docs = get_user_documents_on_chain(owner)
+            owner_titles = [d.get("DocTitle") for d in user_docs]
+            if doctitle not in owner_titles:
+                raise HTTPException(status_code=404, detail="Document not found for this owner")
+        except ContractLogicError as cle:
+            # If even listing fails, bubble up as 404
+            raise HTTPException(status_code=404, detail=str(cle))
+
+        blocks = []
+        for h in history:
+            action_str = ACTION_ENUM[h["action"]] if isinstance(h["action"], int) and h["action"] < len(ACTION_ENUM) else str(h["action"])
+            block = dict(h)
+            block["action"] = action_str
+            block["blockHash"] = compute_block_hash(block)
+            blocks.append(_standardize_block(block))
+        if blocks:
+            return APIResponse(success=True, message="Document history blocks fetched from blockchain.", data={"blocks": blocks})
+        else:
+            raise HTTPException(status_code=404, detail="No history found for this document title.")
+    except ContractLogicError as e:
+        # Map common revert reasons to 404
+        msg = str(e)
+        if "Document does not exist" in msg or "Owner does not match" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=500, detail=f"Failed to fetch document history: {msg}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch document history: {str(e)}")
+
+# New GET endpoint: Get latest block for a document
+@router.get("/blocks/document/{doctitle}/owner/{owner}/latest", response_model=APIResponse)
+async def get_document_latest_block(doctitle: str, owner: str):
+    try:
+        # Pre-check existence to avoid revert and provide clearer error
+        try:
+            user_docs = get_user_documents_on_chain(int(owner))
+            owner_titles = [d.get("DocTitle") for d in user_docs]
+            if doctitle not in owner_titles:
+                raise HTTPException(status_code=404, detail="Document not found for this owner")
+            d = get_document_on_chain(doctitle, int(owner))
+        except Exception as e:
+            msg = str(e)
+            if "Document does not exist" in msg or "execution reverted" in msg or "no data" in msg:
+                raise HTTPException(status_code=404, detail="Document not found for this owner")
+            else:
+                raise
+        action_str = ACTION_ENUM[d["action"]] if isinstance(d["action"], int) and d["action"] < len(ACTION_ENUM) else str(d["action"])
+        block = dict(d)
+        block["action"] = action_str
+        block["blockHash"] = compute_block_hash(block)
+        return APIResponse(success=True, message="Latest block for document fetched from blockchain.", data=_standardize_block(block))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch document latest block: {str(e)}")

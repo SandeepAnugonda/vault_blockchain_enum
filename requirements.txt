@@ -2,11 +2,6 @@
 fastapi
 uvicorn
 
-# Database
-sqlalchemy
-databases
-asyncpg
-
 # Authentication
 python-jose
 passlib
@@ -16,6 +11,9 @@ cryptography
 
 # Others
 pydantic
+email-validator
+python-multipart
+eth-utils
 
 # Blockchain and IPFS
 web3

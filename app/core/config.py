@@ -1,4 +1,8 @@
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from a .env file in the project root, if present
+load_dotenv()
 from cryptography.fernet import Fernet
 
 class Settings:

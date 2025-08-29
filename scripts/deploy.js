@@ -1,10 +1,10 @@
 const hre = require("hardhat");
 
 async function main() {
-  const EnhancedBlockDocument = await hre.ethers.getContractFactory("EnhancedBlockDocument");
-  const contract = await EnhancedBlockDocument.deploy();
+  const Contract = await hre.ethers.getContractFactory("EnhancedBlockDocument");
+  const contract = await Contract.deploy();
   await contract.deployed();
-  console.log("EnhancedBlockDocument deployed to:", contract.address);
+  console.log("Contract deployed to:", contract.address);
 }
 
 main().catch((error) => {
